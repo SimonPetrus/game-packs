@@ -193,6 +193,55 @@ def guvenli_mi(ana, ek):
     return None
 
 
+# Konusmaci adlari: degerlerin basindaki "Ad: " oneki (1-3 sozcuk, her sozcuk buyuk harf + kucuk harfler, yalniz ASCII;
+# basta 2-3 harflik buyuk harfli unvan olabilir: "DJ Pooh"). Yalniz geri kalani konusma gibi olan degerler sayilir (en az
+# iki sozcuk ve cumle sonu isareti ya da en az dort sozcuk). Alan etiketleri ve Turkce rol/genel sozcukler (DUR) alinmaz.
+# Uygulama alani "bilinen konusmaci" olarak kullanir; Runner/Core/GamePacks.swift PackSpeakers ayni kurali uygular.
+KONUSMACI = re.compile(r"^((?:[A-Z]{2,3} )?[A-Z][a-z]+(?: [A-Z][a-z]+){0,2}): (.+)$", re.S)
+KONUSMACI_ESIK = 8
+KONUSMACI_EN_COK = 300
+KONUSMACI_DUR = frozenset("""
+adedi adet alici anchor barmen bilgi bilinmeyen boyut club destesi dil dinamik ebat galibiyet gardiyan gonderen hedef hesap
+kasiyer kat kime kimden kingfishers konu kopya kreyolce language merkez mesaj mud no not offshore personel pilot polis
+protestocu right rusty serseri silah sponsorlu tarih tezgahtar turist turistler unknown veznedar wing yazan yazar yem
+yerel yerli yerliler
+""".split())
+
+
+def temiz_deger(v):
+    """Uygulamanin GamePack.cleaned kurali: etiketler atilir, bosluklar teklenir, bas/son kirpilir."""
+    if "<" in v:
+        v = re.sub(r"<[^<>]{0,40}>", "", v)
+        v = " ".join(p for p in v.split(" ") if p)
+    return v.strip()
+
+
+def konusmaci_oneki(v):
+    """Degerin basindaki konusmaci adi (kurala uyuyorsa), yoksa None."""
+    m = KONUSMACI.match(temiz_deger(v)) if isinstance(v, str) else None
+    if not m:
+        return None
+    ad, kalan = m.group(1), m.group(2).strip()
+    if len(ad.split(" ")) > 3 or any(s.lower() in KONUSMACI_DUR for s in ad.split(" ")):
+        return None
+    sozcuk = kalan.split()
+    if len(sozcuk) < 2 or not (kalan[-1] in ".!?\u2026" or len(sozcuk) >= 4):
+        return None
+    return ad
+
+
+def konusmaci_adlari(d):
+    """Degerlerden konusmaci adlari: en az KONUSMACI_ESIK kez, siklik azalan sonra ada gore, en cok KONUSMACI_EN_COK."""
+    sayac = {}
+    for tablo in ("entries", "segments"):
+        for v in d.get(tablo, {}).values():
+            ad = konusmaci_oneki(v)
+            if ad:
+                sayac[ad] = sayac.get(ad, 0) + 1
+    adlar = sorted((a for a, n in sayac.items() if n >= KONUSMACI_ESIK), key=lambda a: (-sayac[a], a))
+    return adlar[:KONUSMACI_EN_COK]
+
+
 def birlestir(ana, ek, kimlik, ana_baslik_yoksa):
     entries, c1 = tablo_birlestir(ana["entries"], ek["entries"])
     segments, c2 = tablo_birlestir(ana.get("segments", {}), ek.get("segments", {}))
@@ -215,6 +264,9 @@ def birlestir(ana, ek, kimlik, ana_baslik_yoksa):
     cikti["segments"] = segments
     if imza:
         cikti["fuzzy"] = fuzzy_yaz(sira, imza)
+    adlar = konusmaci_adlari(cikti)
+    if adlar:
+        cikti["speakers"] = adlar
     return cikti, c1 + c2, (c1, c2)
 
 
@@ -509,6 +561,14 @@ def denetle(args):
             if kotu:
                 hata.append("%s.%s: 200 örnekten %d anahtarda çeviri kaynağıyla aynı değil" % (kimlik, tablo, kotu))
             print("  %-28s %-9s ana=%d ek=%d birleşik=%d çakışma=%d örnek=%d" % (kimlik, tablo, len(A), len(E), len(D), len(ortak), len(ornek)))
+        # konuşmacı adları: değerlerden yeniden çıkarılanla aynı, dize listesi, sınır içinde
+        sp = d.get("speakers", [])
+        if not isinstance(sp, list) or not all(isinstance(x, str) and KONUSMACI.match(x + ": a b.") for x in sp):
+            hata.append(kimlik + ": speakers alanı geçersiz")
+        elif sp != konusmaci_adlari(d) or len(sp) > KONUSMACI_EN_COK:
+            hata.append(kimlik + ": speakers alanı değerlerden çıkarılanla aynı değil")
+        else:
+            print("  %-28s speakers  %d ad" % (kimlik, len(sp)))
         # bulanık imza tutarlılığı: ana imzaları aynen korunmuş mu
         if "fuzzy" in a:
             ia, ib = fuzzy_coz(a), fuzzy_coz(d)
@@ -545,6 +605,19 @@ def kendini_sina():
     ic = fuzzy_coz(j)
     assert ic == fuzzy_coz(A), (ic, fuzzy_coz(A))
     assert j["fuzzy"]["count"] == 6
+    assert "speakers" not in j, "adsız pakete alan yazılmaz"
+    # konuşmacı adları: eşik, sıra, ASCII kuralı, birleşikte alan
+    soz = " ne oldu simdi?"
+    K = {"entries": {"%016x" % i: v for i, v in enumerate(
+        ["Lucia:" + soz] * 9 + ["Jason:" + soz] * 9 + ["Cal:" + soz] * 8 + ["Brian:" + soz] * 7 + ["UYARI:" + soz] * 9
+        + ["Muhafız:" + soz] * 9 + ["Raul Bautista:" + soz] * 8 + ["lucia:" + soz] * 9 + ["Bir Iki Uc Dort:" + soz] * 9
+        + ["DJ Pooh:" + soz] * 8 + ["Polis:" + soz] * 9 + ["Kimden: Lucia"] * 9 + ["Tarih: 12 Mart"] * 9
+        + ["Kenny: <b>bu</b> ne simdi?"] * 8)}}
+    assert konusmaci_adlari(K) == ["Jason", "Lucia", "Cal", "DJ Pooh", "Kenny", "Raul Bautista"], konusmaci_adlari(K)
+    assert konusmaci_oneki("Kopya No: 4") is None and konusmaci_oneki("Bilgi: Bu bir deneme metnidir.") is None
+    K.update(format=2, id="k", title="K")
+    jk, _, _ = birlestir(K, {"format": 2, "id": "pool-k", "entries": {}}, "k", "k")
+    assert jk["speakers"] == ["Jason", "Lucia", "Cal", "DJ Pooh", "Kenny", "Raul Bautista"]
     print("kendini sınama geçti")
 
 
@@ -565,12 +638,12 @@ def main():
     args = ap.parse_args()
     global ATIF_EK
     ATIF_EK = args.atif_ek
+    if args.kendini_sina:
+        return kendini_sina()
     if args.indir:
         return indir_kipi(args)
     if not args.girdi:
         ap.error("--girdi gerekli")
-    if args.kendini_sina:
-        return kendini_sina()
     if args.denetle:
         return denetle(args)
     uret(args)
