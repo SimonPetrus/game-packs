@@ -45,7 +45,7 @@ jobs:
         run: |
           test -n "$KAYNAK_ADRES" || { echo "KAYNAK_ADRES değişkeni tanımlı değil"; exit 1; }
           python3 -I tools/paket_birlestir.py --indir "$KAYNAK_ADRES" \
-            --kaynak kaynak --cikti yayin --atif-ek atif-ek.md
+            --kaynak kaynak --girdi-ek ek --cikti yayin --atif-ek atif-ek.md
 
       - name: Yayınla (gh-pages dalı)
         if: steps.guncelle.outputs.degisti == 'true'
