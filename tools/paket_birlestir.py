@@ -411,8 +411,9 @@ def katki_uygula(plan, dil):
                 sys.exit("KATKI UYGULANAMADI: %s: %s" % (kimlik, neden))
             j, say, _, _ = ekle_eksik(d, kd)
             bilgi = dict(bilgi, katki_oncesi=d)
-            print("  katkı %s: eklenen=%d ortak değişen=%d istisna=%d soyulan etiket=%d" % (
-                kimlik, say["eklenen_anahtar"], say["ortak_degisen"], say["istisna"], say["soyulan_etiket"]))
+            print("  katkı %s: eklenen=%d ortak değişen=%d istisna=%d (kaynakla aynı konuşma: entries %d, segments %d) soyulan etiket=%d" % (
+                kimlik, say["eklenen_anahtar"], say["ortak_degisen"], say["istisna"], say["kaynakla_ayni_entries"],
+                say["kaynakla_ayni_segments"], say["soyulan_etiket"]))
             sonuc.append((kimlik, tur + "+katkı", gz_yaz(json_bayt(j)), j, bilgi))
         else:
             sonuc.append((kimlik, tur, bayt, d, bilgi))
@@ -819,6 +820,10 @@ def kendini_sina():
 # ---------------------------------------------------------------- --ekle-eksik (iki ayri paketin tek pakette birlesmesi)
 # Kural: yalniz bizde olan anahtar aynen kalir; yalniz onlarda olan eklenir; ortak anahtarda onlarin (temizlenmis,
 # dil etiketi soyulmus, konusmaci onegi bizimkiyle uyumlu) degeri alinir, denetimden gecmezse bizimki kalir.
+# Onlarin degeri Ingilizce kaynakla ayniysa (kaynakla_ayni: uygulama boyle satiri gostermez), bizimki degilse ve deger
+# konusma/cumle ise (konusma_mi) bizimki kalir ("Hey." -> bizim "Selam.", onlarin "Hey!"). Ozel ad (kisi, yer, mekan,
+# gorev adi: "Port Gellhorn Motel") onlarinki kalir: ekranda oyunun kendi yazisi gorunur. Bizimki de ayniysa ya da
+# anahtar yalniz onlardaysa kural islemez.
 # Arama sirasi (GamePacks.lookup): once butun paketlerin entries'i, sonra segments'i. Capraz anahtar (bizde bir tabloda,
 # onlarda obur tabloda) BIZIM tablomuzda tek deger olarak kalir: obur tabloya ekleme ya bizimkini golgeler
 # (entries once okunur) ya da hic okunmaz.
@@ -929,6 +934,101 @@ def konusmaci_uyumu(bizim, onlarin, bilinen=()):
     return None, "etiket yalnız onlarda"
 
 
+def paket_anahtari(metin):
+    """Uygulamanin paket anahtari (PackKey.key): etiketler bosluk, NFKC, kucuk harf, NFD ile isaretler atilir, harf ve
+    rakam disi bosluk, bosluklar teklenir; SHA-256'nin ilk 8 bayti (hex). Harf/rakam yoksa None."""
+    import unicodedata
+    s = re.sub(r"<[^<>]{0,40}>", " ", metin)
+    s = unicodedata.normalize("NFD", unicodedata.normalize("NFKC", s).lower())
+    cikti, bosluk = [], False
+    for ch in s:
+        kat = unicodedata.category(ch)
+        if kat[0] == "M":
+            continue
+        if kat[0] in "LN":
+            if bosluk and cikti:
+                cikti.append(" ")
+            bosluk = False
+            cikti.append(ch)
+        else:
+            bosluk = True
+    kanon = "".join(cikti)
+    return hashlib.sha256(kanon.encode("utf-8")).hexdigest()[:16] if kanon else None
+
+
+def kaynakla_ayni(anahtar, deger):
+    """Deger, anahtarin Ingilizce kaynagiyla sadelestirilince birebir ayni mi (paket_anahtari(deger) == anahtar).
+    Uygulama boyle ceviriyi gostermez (SubtitleStabilizer.shouldSend: normalize + Levenshtein >= 0.90; buyuk/kucuk
+    harf ve noktalama sayilmaz). Paket Ingilizceyi tasimaz (anahtar ozettir), bu yuzden yalniz birebir aynilik
+    olculebilir; %90-99 benzer degerler burada yakalanmaz."""
+    return isinstance(deger, str) and paket_anahtari(deger) == anahtar
+
+
+# Konusma ayiraci: bu sozcuklerden biriyle baslayan deger konusmadir (unlem, selam, onay).
+UNLEMLER = frozenset("""hey hi hello yo okay ok yeah ye yep yup nope nah oh ah ahh uh um hmm mmm heh huh ugh igh wow whoa
+lol lmao omg sorry thanks""".split())
+# Sondaki sozcugu bunlardan biri olan deger ad sayilir: kisaltmalar ("Vice Beach St.") ve yer/kurum adi sozcukleri
+# (gorev metnindeki "Broke Peak Trail.", "Legendary Custom Jewelry Store.", noktalamasiz "caprice canal").
+AD_KISALTMALARI = frozenset("""st ave blvd rd dr jr sr inc co ltd corp bros mt ft street avenue road boulevard drive lane
+way trail bridge overpass park beach bay island islands river lake dam store shop mart market motel hotel inn bar club
+diner cafe restaurant station center centre mall plaza square tower building hall church school hospital airport port
+marina pier jetty dock quay yard squad gang crew company county city town village heights hills valley point creek
+canal highway freeway expressway parkway pass peak mountain reserve national apartments apartment pd""".split())
+# Ad icinde kucuk harfle yazilabilen baglaclar ("Port of Gellhorn", "The Ogdoad that Never Comes"): konusma sayilmaz.
+AD_BAGLACLARI = frozenset("of the a an and n that de da del di du la le los las van von y & at on in by for to".split())
+# Olcu birimleri: yalniz sayi ve birimden olusan deger ("ft", "3 - 10 lbs") ad gibi oyunun yazisiyla kalir.
+BIRIMLER = frozenset("ft mph kph mi oz yd yds lb lbs km kg mm cm m g".split())
+# Bizim (Turkce) degerde ad ogesi sayilan kucuk harfli sozcukler: baglac ve soru eki ("Kont Sikula mı?").
+TR_AD_BAGLACLARI = frozenset("ve ile ya veya de da mi mı mu mü".split())
+
+
+def _sozcukler(t):
+    """Bosluklar arasindaki parcalar, bas/son isaretleri atilmis; rakamli parca ("3rd", "90") sozcuk sayilmaz."""
+    return [w for w in (re.sub(r"^\W+|\W+$", "", x) for x in t.split()) if w and not any(c.isdigit() for c in w)]
+
+
+def konusma_mi(deger, bizim=None):
+    """Kaynakla ayni degerin konusma/cumle mi ozel ad mi oldugu (belirsizde ad: Ingilizce kalir). Sira:
+    (a) ! ? … icermeyen, yalniz sayi ve olcu biriminden olusan deger ad ("ft", "3 - 10 lbs");
+    (b) ilk sozcugu unlem/selam olan konusma ("Hey", "lol", "Okay");
+    (c) . ! ? … icermeyen degerde son sozcuk ad sonuysa ("caprice canal") ya da hic buyuk harf yoksa ("starfish") ad;
+    (d) konusma adayi: son karakter (kapanis tirnagi atilinca) ! ? … ya da metinde ! ? … gecer, ya da ad sonu
+        olmayan sondaki nokta; ya da baglac disinda tamami kucuk harfli bir sozcuk var ("Jimmy snorts");
+    (e) aday olsa da: '!' ile bitmeyen, butun sozcukleri buyuk harfle baslayan (baglac haric) deger, bizim Turkce
+        degerimiz de yalniz buyuk harfli sozcuk/baglac/soru ekinden olusuyorsa ad ("Kenton. Sir Todd.", "Cartagena.");
+        '?' ile bitende ayrica bizimki onlarin buyuk harfli sozcuklerinden birini (2+ harf) icermemeli ("Andrew Node?" /
+        "Andrew!!!" ad; "Joe?" / "Joe mu?" konusma). Bizim deger cumle cevirisiyse ("Jimmy burnunu çekiyor.") konusma.
+    Gerisi ad."""
+    t = deger.strip()
+    son = t.rstrip("\"'\u201d\u2019)]\u00bb ")
+    isaretli = any(c in t for c in "!?\u2026")
+    parcalar = [w for w in (re.sub(r"^\W+|\W+$", "", x) for x in t.split()) if w]
+    if not isaretli and parcalar and all(any(c.isdigit() for c in w) or w.lower() in BIRIMLER for w in parcalar):
+        return False
+    sozcukler = _sozcukler(t)
+    if sozcukler and sozcukler[0].lower() in UNLEMLER:
+        return True
+    if not isaretli and "." not in son[-1:]:
+        if sozcukler and sozcukler[-1].lower() in AD_KISALTMALARI:
+            return False
+        if not any(c.isupper() for c in t):
+            return False
+    aday = isaretli or son.endswith("..")
+    if not aday and son[-1:] == "." and not re.search(r"(?:^|[\s.])[A-Za-z]\.$", son):
+        aday = re.sub(r"\W", "", son.rsplit(None, 1)[-1]).lower() not in AD_KISALTMALARI
+    if not aday:
+        aday = any(w.islower() and w.lower() not in AD_BAGLACLARI for w in sozcukler)
+    if not aday:
+        return False
+    if bizim is not None and sozcukler and not son.endswith("!") \
+            and all(w[0].isupper() or w.lower() in AD_BAGLACLARI for w in sozcukler) \
+            and all(w[0].isupper() or w.lower() in TR_AD_BAGLACLARI for w in _sozcukler(bizim)) \
+            and (not son.endswith("?")
+                 or any(len(w) >= 2 and w.lower() not in bizim.lower() for w in sozcukler if w.lower() not in AD_BAGLACLARI)):
+        return False
+    return True
+
+
 def ekle_eksik(biz, asil):
     """Doner: (paket, sayac, degisenler [(tablo, anahtar, once, sonra)], elenenler {anahtar: neden})."""
     T = ("entries", "segments")
@@ -936,8 +1036,10 @@ def ekle_eksik(biz, asil):
     say = {"eklenen_satir": 0, "eklenen_anahtar": 0, "elenen_satir": 0, "elenen_anahtar": 0, "ortak_anahtar": 0,
            "ortak_degisen": 0, "ortak_ayni": 0, "istisna": 0, "capraz_bizE_onlarS": 0, "capraz_bizS_onlarE": 0,
            "soyulan_etiket": 0, "soyulan_etiket_ortak_alinan": 0, "soyulan_etiket_eklenen": 0,
-           "soyulan_etiket_bizim": 0, "bizim_soyulan_deger": 0}
+           "soyulan_etiket_bizim": 0, "bizim_soyulan_deger": 0, "kaynakla_ayni_entries": 0, "kaynakla_ayni_segments": 0,
+           "kaynakla_ayni_ad_entries": 0, "kaynakla_ayni_ad_segments": 0}
     nedenler = {}
+    kaynakla_ayni_kalan = []
     degisen, elenen = [], {}
     bizde = set(biz.get("entries", {})) | set(biz.get("segments", {}))
     bilinen = frozenset(biz.get("speakers") or ())
@@ -979,6 +1081,13 @@ def ekle_eksik(biz, asil):
                 d, tur = konusmaci_uyumu(once, d, bilinen)
                 if d is not None and not d:
                     d, tur = None, "önek çıkarınca boş"
+                # Onlarin degeri kaynakla ayni (uygulama gostermez), bizimki degil: bizimki kalir.
+                if d is not None and kaynakla_ayni(k, d) and not kaynakla_ayni(k, dil_temizle(once)[0]):
+                    konusma = konusma_mi(d, dil_temizle(once)[0])
+                    say[("kaynakla_ayni_" if konusma else "kaynakla_ayni_ad_") + t] += 1
+                    kaynakla_ayni_kalan.append((t, k, d, once, konusma))
+                    if konusma:
+                        d, tur = None, "onların değeri kaynakla aynı (konuşma)"
                 if d is None:
                     neden = tur
             if d is None:
@@ -1028,6 +1137,7 @@ def ekle_eksik(biz, asil):
         cikti["speakers"] = biz["speakers"]  # korunur
     say["nedenler"] = dict(sorted(nedenler.items()))
     say["bizim_soyulan"] = bizim_soyulan
+    say["kaynakla_ayni_kalan"] = kaynakla_ayni_kalan  # (tablo, anahtar, onlarin, bizim, konusma mi)
     return cikti, say, degisen, elenen
 
 
@@ -1070,7 +1180,7 @@ def ekle_eksik_denetle(biz, asil, d, elenen_beklenen=None):
                 hata.append("anahtar beklenmeyen tabloda: %s.%s" % (t, k))
                 break
     # (2) ortak anahtar: onlarin hazirlanmis degeri, konusmaci onegi uyarlanmis hali ya da belgelenmis istisna (bizimki)
-    alinan = istisna = 0
+    alinan = istisna = kaynakla = 0
     for t in T:
         for k, once in B[t].items():
             if k not in ak:
@@ -1078,6 +1188,12 @@ def ekle_eksik_denetle(biz, asil, d, elenen_beklenen=None):
             v = A[t][k] if k in A[t] else A["segments" if t == "entries" else "entries"][k]
             h = hazirla(v)[0]
             son = D[t][k]
+            bizim_temiz = dil_temizle(once)[0]
+            if son != bizim_temiz and kaynakla_ayni(k, son) and not kaynakla_ayni(k, bizim_temiz) and konusma_mi(son, bizim_temiz):
+                hata.append("ortak anahtarda kaynakla aynı konuşma değeri alındı, bizimki atıldı: %s.%s" % (t, k))
+                break
+            if son == bizim_temiz and h is not None and kaynakla_ayni(k, h) and not kaynakla_ayni(k, bizim_temiz) and konusma_mi(h, bizim_temiz):
+                kaynakla += 1
             adaylar = set()
             if h is not None:
                 adaylar.add(h)
@@ -1092,6 +1208,7 @@ def ekle_eksik_denetle(biz, asil, d, elenen_beklenen=None):
                 hata.append("ortak anahtarda değer ne onların ne bizim: %s.%s" % (t, k))
                 break
     o["ortak_onlarin"], o["ortak_istisna_bizim"] = alinan, istisna
+    o["ortak_onlarinki_kaynakla_ayni_bizimki_kaldi"] = kaynakla
     # yeni anahtar: onlarin hazirlanmis degeri
     for t in T:
         for k in dk - bk:
@@ -1190,7 +1307,8 @@ def ekle_eksik_kipi(args):
     satir = [
         "Paket: %s (sürüm %d)" % (kimlik, args.surum),
         "Kural: yalnız bizde olan aynen (yalnız dil etiketi soyulur); yalnız onlarda olan eklenir; ortakta onların değeri (dil etiketi soyulmuş, "
-        "konuşmacı öneki bizimkiyle uyumlu); denetimden geçmeyende bizimki kalır. Çapraz anahtar bizim tablomuzda kalır.",
+        "konuşmacı öneki bizimkiyle uyumlu); denetimden geçmeyende ve onların değeri İngilizce kaynakla aynı bir konuşmayken (bizimki "
+        "değilse; özel adda onlarınki) bizimki kalır. Çapraz anahtar bizim tablomuzda kalır.",
         "",
         "                önce        sonra",
         "entries     %9d   %9d" % (len(biz["entries"]), len(j["entries"])),
@@ -1202,6 +1320,8 @@ def ekle_eksik_kipi(args):
         "elenen (yeni) anahtar: %d (satır %d)" % (say["elenen_anahtar"], say["elenen_satir"]),
         "ortak anahtar: %d; değişen satır %d, aynı kalan %d, istisna (bizimki kaldı) %d" % (
             say["ortak_anahtar"], say["ortak_degisen"], say["ortak_ayni"], say["istisna"]),
+        "kaynakla aynı konuşma (bizimki kaldı): entries %d, segments %d; kaynakla aynı ad (onlarınki kaldı): entries %d, segments %d" % (
+            say["kaynakla_ayni_entries"], say["kaynakla_ayni_segments"], say["kaynakla_ayni_ad_entries"], say["kaynakla_ayni_ad_segments"]),
         "çapraz: bizde entries/onlarda segments %d, bizde segments/onlarda entries %d (bizim tabloda kaldı)" % (
             say["capraz_bizE_onlarS"], say["capraz_bizS_onlarE"]),
         "soyulan dil etiketi: %d (ortakta alınan %d, eklenen %d, bizden kalan %d değerde %d); etiketler: %s" % (
@@ -1388,6 +1508,62 @@ def ekle_eksik_sina():
     assert ja["entries"] == {h(1): "نعم.", h(2): "لا"} and ja["segments"] == {h(3): "هيا!"} and sa_["soyulan_etiket"] == 3
     assert ja["fuzzy"] == pa["fuzzy"] and ja["lang"] == "ar" and ja["source"] == "k; dil etiketleri ayıklandı"
     assert not etiket_soy_denetle(pa, ja, "ar")[0]
+    # paket anahtari uygulamanin PackKey'iyle ayni (golden-vectors.json'dan)
+    for metin, anahtar in (("You fucked up now, boy!", "e7f18c8f6d1083ab"), ("Caffè, per favore.", "68994b0ce45add3a"),
+                           ("<b><h>SCANNATURI SPECIALE</></> KNIFE", "1e9ae63d544282c4"), ("İstanbul", "751c59fe1fa734e6"),
+                           ("ENZO: Don Torrisi wants you.", "025d21d2f072b4a5"), ("Ｆｕｌｌ　ｗｉｄｔｈ ５", "ff5126e112d609b8")):
+        assert paket_anahtari(metin) == anahtar, metin
+    assert paket_anahtari("...") is None and not kaynakla_ayni(h(1), None)
+    # kaynakla ayni: onlarin degeri Ingilizceyle ayni, bizimki degil -> konusmada bizimki kalir, ozel adda onlarinki;
+    # bizimki de ayniysa onlarinki; yalniz onlarda olana ve konusmaci onekli Ingilizce degere de kural ayni bakar
+    for v in ("Hey.", "Hey, Jay.", "Hey!", "Hey, Arnold:", "Hey Arnold!", "lol", "LOL", "Jimmy Snorts.", "Jimmy snorts.",
+              "Hey, Jay!", "Banshee?", "Oxies, Percs, Xans...", "Little Cuba, 3rd Avenue? Now."):
+        assert konusma_mi(v), v
+    for v in ("Ali", "Kelly Hoops /", "Martha & Lyle", "Port Gellhorn Motel", "Saint Attaway Islands", "Hamlet Jetty",
+              "T.H. Power Station", "THE INKED MERMAID", "The Inked Mermaid", '"All-Denim" Callaghan', "Princess",
+              "Vice Beach St.", "Broke Peak Trail.", "Port of Gellhorn", "Pay 'n' Spray", "Little Cuba, 3rd Avenue.",
+              "VCIA S. Terminal", "Zenshin Blade 3", "ft", "mph", "mi", "3 - 10 lbs", "caprice canal", "the kalaga",
+              "fuckuthought", "gotthosemunchies", "#thedeepwall lol", "starfish", '"The Ogdoad that Never Comes"'):
+        assert not konusma_mi(v), v
+    # bizim degere gore: ad sozcuklerinden olusan deger, bizimki de ad gibiyse ad; bizimki cumle cevirisiyse konusma
+    for v, bizim, beklenen in (("Andrew Node?", "Andrew!!!", False), ("Kenton. Sir Todd.", "Kenton. Efendim Todd.", False),
+                               ("Vice Dale Water and Sewage. Westbrook Drive. Salton.",
+                                "Vice Dale Su ve Kanalizasyon. Westbrook Drive. Salton.", False),
+                               ("Cartagena.", "Cartagena'ya.", False), ("Count Fuckula.", "Kont Sikula mı?", False),
+                               ('"The Ogdoad that Never Comes"', '"Hiç Gelmeyen Ogdoad"', False),
+                               ("Jimmy Snorts.", "Jimmy burnunu çekiyor.", True), ("Hey.", "Selam.", True),
+                               ("Hey, Jay.", "Selam, Jay.", True), ("Hey Arnold!", "Selam Arnold!", True),
+                               ("Hey, Arnold:", "Selam Arnold!", True), ("lol", "Hahaha.", True), ("LOL", "Hahaha.", True),
+                               ("Big Bertha!", "Büyük Bertha!", True), ("35mm?", "35mm mi?", True), ("0.9kg!", "0,9 kilo!", True),
+                               ("Princess", "Prenses?", False), ("Ali", "Bira?", False), ("ft", "Hı..", False),
+                               ("Joe?", "Joe mu?", True), ("Camila Fuentes? Giorgio Gallo?", "Camila Fuentes mi? Giorgio Gallo mu?", True),
+                               ("Mister Mangrove???", "Bay Mangrove???", False)):
+        assert konusma_mi(v, bizim) is beklenen, (v, bizim)
+    k = paket_anahtari
+    B2 = {"format": 2, "id": "y", "title": "Y", "speakers": ["Jason"],
+          "entries": {k("Hey."): "Selam.", k("lol"): "Hahaha.", k("Okay."): "Okay", k("Run!"): "Koş!",
+                      k("Jason: Hey."): "Jason: Selam.", k("Go."): "İspanyolca: Go!", k("Princess"): "Prenses?"},
+          "segments": {k("THE INKED MERMAID"): "Mürekkepli Deniz Kızı", k("Jimmy snorts."): "Jimmy burnunu çekiyor."}}
+    A2 = {"format": 2, "id": "y", "title": "Y",
+          "entries": {k("Hey."): "Hey!", k("lol"): "LOL", k("Okay."): "OK.", k("Run!"): "Kaç!", k("Wait."): "Wait!",
+                      k("Jason: Hey."): "Jason: HEY!", k("Go."): "GO", k("THE INKED MERMAID"): "The Inked Mermaid",
+                      k("Princess"): "Princess", k("Jimmy snorts."): "Jimmy Snorts."}}
+    j3, say3, _, _ = ekle_eksik(B2, A2)
+    e3, s3 = j3["entries"], j3["segments"]
+    assert e3[k("Hey.")] == "Selam." and e3[k("lol")] == "Hahaha." and e3[k("Jason: Hey.")] == "Jason: Selam."
+    assert s3[k("Jimmy snorts.")] == "Jimmy burnunu çekiyor."                 # capraz konusma: bizimki
+    assert s3[k("THE INKED MERMAID")] == "The Inked Mermaid" and e3[k("Princess")] == "Princess"   # ad: onlarinki
+    assert e3[k("Okay.")] == "OK." and e3[k("Run!")] == "Kaç!" and e3[k("Wait.")] == "Wait!"
+    assert e3[k("Go.")] == "GO"                                                # bizimki de (etiket soyulunca) ayni
+    assert (say3["kaynakla_ayni_entries"], say3["kaynakla_ayni_segments"]) == (3, 1), say3
+    assert (say3["kaynakla_ayni_ad_entries"], say3["kaynakla_ayni_ad_segments"]) == (1, 1), say3
+    assert say3["nedenler"]["istisna: onların değeri kaynakla aynı (konuşma)"] == 4
+    hata3, o3 = ekle_eksik_denetle(B2, A2, j3)
+    assert not hata3, hata3
+    assert o3["ortak_onlarinki_kaynakla_ayni_bizimki_kaldi"] == 4, o3
+    j4 = json.loads(json_bayt(j3))
+    j4["entries"][k("Hey.")] = "Hey!"                                         # kural bozulursa denetim yakalar
+    assert any("kaynakla aynı" in x for x in ekle_eksik_denetle(B2, A2, j4)[0])
     print("ekle-eksik sınaması geçti")
 
 
