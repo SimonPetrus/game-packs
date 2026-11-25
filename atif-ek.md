@@ -43,3 +43,13 @@ and [menu transcript](https://marvels-spider-man.fandom.com/wiki/Marvel%27s_Spid
 Marvel's Spider-Man Wiki (Fandom, text under [CC BY-SA](https://creativecommons.org/licenses/by-sa/3.0/), by its
 contributors), and from English lines CouchSubs users read on screen (shared subtitle pool). Marvel's Spider-Man 2 is
 a trademark of Marvel and Sony Interactive Entertainment LLC.
+
+## Grand Theft Auto VI ek paketleri (`katki/gta-6.json.gz`, `ek/gta-6-ar.json.gz`)
+
+`gta-6` paketine `katki/gta-6.json.gz` satırları eklenir; ortak satırlarda bu paketin çevirisi kullanılır, değer başındaki
+ve cümle aralarındaki dil etiketleri ("İspanyolca: …") ayıklanır. `ek/gta-6-ar.json.gz` Arapça pakettir (`v1/packs-ar`);
+dil etiketleri ayıklanmıştır. İki paketin kaynağı (paketlerin `source` alanı, özgün hâliyle):
+
+```
+GameTranslator, Codex (gpt-6.2-sol), 2026-11-22; English text: GTA 6 Xbox 1.0.2.1 dump
+```

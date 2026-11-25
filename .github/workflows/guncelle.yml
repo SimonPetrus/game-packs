@@ -44,8 +44,11 @@ jobs:
         id: guncelle
         run: |
           test -n "$KAYNAK_ADRES" || { echo "KAYNAK_ADRES değişkeni tanımlı değil"; exit 1; }
+          # katki/: kaynaktaki ayni kimlikli pakete her koşuda --ekle-eksik kuralıyla uygulanır (aynalama ezmez).
+          # ek/: kaynakta olmayan paketler (lang "ar" olanlar v1/packs-ar ağacına). --onceki-gerekli: önceki yayın
+          # okunamazsa yayınlamaz (sürümler geri gitmesin).
           python3 -I tools/paket_birlestir.py --indir "$KAYNAK_ADRES" \
-            --kaynak kaynak --girdi-ek ek --cikti yayin --atif-ek atif-ek.md
+            --kaynak kaynak --girdi-ek ek --katki katki --onceki-gerekli --cikti yayin --atif-ek atif-ek.md
 
       - name: Yayınla (gh-pages dalı)
         if: steps.guncelle.outputs.degisti == 'true'

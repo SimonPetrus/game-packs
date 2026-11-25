@@ -9,4 +9,9 @@ Oyun altyazı çeviri paketleri: oyun başına tek birleşik paket ve `index.jso
 - Güncelleme: `.github/workflows/guncelle.yml` kaynaktan yalnız değişen paketleri indirir, `tools/paket_birlestir.py` ile birleştirir;
   değişiklik yoksa yayın yapılmaz. Kaynak alınamazsa ya da sonuç bir önceki yayından belirgin küçükse yayın değişmez.
 - Kurulum: depo değişkeni `KAYNAK_ADRES` (kaynak sunucunun taban adresi) tanımlanmalı; Pages kaynağı `gh-pages` dalı olmalı.
+- Arapça paketler ayrı ağaçtan sunulur: `<taban>/v1/packs-ar` (liste) ve `<taban>/v1/packs-ar/<kimlik>`; ana liste
+  (`v1/packs`, `index.json`) yalnız Türkçe paket içerir. Listedeki her girdide `lang` alanı vardır.
+- `ek/`: kaynakta olmayan paketler (paketin `lang` alanı yoksa Türkçe). `katki/`: kaynaktaki aynı kimlikli pakete her
+  güncellemede eklenen satırlar (ortakta katkının çevirisi kullanılır); güncellemek için dosya elle değiştirilir.
+- Sürüm numarası yalnız paketin içeriği değişince bir artar; önceki yayın okunamazsa güncelleme yayın yapmaz.
 - Atıf ve lisans notları: `ATIF.md`.
