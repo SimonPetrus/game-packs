@@ -841,8 +841,29 @@ DIL_INGILIZCE = re.compile(r"(?i)\b(?:spanish|italian|creole|french|russian|fili
 DIL_ETIKETLERI_AR = ("بالإسبانية", "بلغة غير معروفة", "بالإيطالية", "بالكريولية", "بالفلبينية", "بالروسية", "بالفرنسية",
                      "بالألبانية", "بالبرتغالية", "بالصربية", "بالإنجليزية")
 _AD_AR = r"[^\s:.!?\u061f\u2026\u060c]+(?: [^\s:.!?\u061f\u2026\u060c]+){0,2}"  # en cok uc sozcuk, noktalamasiz
+# Genis Turkce dil etiketi: yalniz GENIS_ETIKET kimlikli paketlerin --ekle-eksik/katki birlesmesinde ("tr-genis").
+# RDR2 kaynak paketinde ve PC yamasinda gorulen bicimler: dil adi yalin ("Almanca:"), iyelik ("İspanyolcası:",
+# "Lehçesi:"), bulunma ("Almancada:", "İspanyolca'da:", "Lehçede:"), "olarak" ("İspanyolca olarak:"), "<ad> dilinde"
+# ("Mandarin dilinde:"), yalin "Mandarin:" ve yamada kalan Ingilizce "In Spanish:".
+# Obur paketler (gta-6 dahil) "tr" kalibini kullanir; davranislari degismez.
+GENIS_ETIKET = frozenset({"red-dead-redemption-2"})
+DIL_ADLARI_GENIS = ("İspanyolca", "İtalyanca", "Kreolce", "Filipince", "Rusça", "Fransızca", "Arnavutça", "Portekizce",
+                    "Sırpça", "Kreyolce", "Kantonca", "Almanca", "Lehçe", "Mandarince", "Mandarin", "Lakotaca", "Norveççe",
+                    "Latince")
+_GENIS = r"(?:(?:%s)(?:s[ıi]|'?d[ae]| olarak)?|(?:Mandarin|Lakota) dilinde|Bilinmeyen [dD]il|In Spanish)" % "|".join(
+    DIL_ADLARI_GENIS)
+DIL_ONEKI_GENIS = re.compile(r"^(?:(%s): )?%s\s*:\s+" % (_AD, _GENIS))
+DIL_ORTA_GENIS = re.compile(r"([.!?…][\"”’»)\]]*)[ \t]+(?:(%s): )?%s[ \t]*:[ \t]+(?=\S)" % (_AD, _GENIS))
+
+
+def etiket_dili(paket):
+    """--ekle-eksik dil etiketi kalibi: GENIS_ETIKET kimlikli paket "tr-genis", obur paketler "tr"."""
+    return "tr-genis" if isinstance(paket, dict) and paket.get("id") in GENIS_ETIKET else "tr"
+
+
 DIL_KALIPLARI = {
     "tr": (DIL_ONEKI, DIL_ORTA),
+    "tr-genis": (DIL_ONEKI_GENIS, DIL_ORTA_GENIS),
     "ar": (re.compile(r"^(?:(%s): )?(?:%s)\s*:\s+" % (_AD_AR, "|".join(DIL_ETIKETLERI_AR))),
            re.compile(r"([.!?\u061f\u2026][\"\u201d\u2019\u00bb)\]]*)[ \t]+(?:(%s): )?(?:%s)[ \t]*:[ \t]+(?=\S)"
                       % (_AD_AR, "|".join(DIL_ETIKETLERI_AR)))),
@@ -897,11 +918,11 @@ def deger_denetimi(v):
     return t, None
 
 
-def hazirla(v):
+def hazirla(v, dil="tr"):
     """Onlarin degeri: dil etiketi soyulur, sonra denetlenir. Doner: (deger|None, neden|None, soyuldu)."""
     if not isinstance(v, str):
         return None, "dize değil", False
-    s, soyuldu = dil_temizle(temiz_deger(v))
+    s, soyuldu = dil_temizle(temiz_deger(v), dil)
     t, neden = deger_denetimi(s)
     return t, neden, soyuldu
 
@@ -914,13 +935,13 @@ def genel_onek(v):
     return m.group(1)
 
 
-def konusmaci_uyumu(bizim, onlarin, bilinen=()):
+def konusmaci_uyumu(bizim, onlarin, bilinen=(), dil="tr"):
     """Ortak anahtarda konusmaci/etiket onegini bizimkiyle uyumlu yapar. Doner: (deger|None, tur). None: bizimki kalsin.
     Uygulama okunan satirin basindaki etiketi ayirip govdeyi arayabilir ve etiketi ceviriye kendisi ekler
     (PackLookup.single); paketteki onek ekranda gorunur. Onegin varligi anahtarin Ingilizcesine baglidir, bu yuzden
     bizim degerdeki onek durumu korunur: iki tarafta da etiket varsa bizim etiket + onlarin sozu; yalniz bizde bilinen
     konusmaci (speakers) varsa bizim onek + onlarin degeri; obur tek tarafli durumlarda bizimki kalir."""
-    gb, ga = genel_onek(dil_soy(temiz_deger(bizim))[0]), genel_onek(onlarin)  # bizim dil etiketi konusmaci degil
+    gb, ga = genel_onek(dil_soy(temiz_deger(bizim), dil)[0]), genel_onek(onlarin)  # bizim dil etiketi konusmaci degil
     if gb is None and ga is None:
         return onlarin, "aynı"
     if gb is not None and ga is not None:
@@ -1043,13 +1064,14 @@ def ekle_eksik(biz, asil):
     degisen, elenen = [], {}
     bizde = set(biz.get("entries", {})) | set(biz.get("segments", {}))
     bilinen = frozenset(biz.get("speakers") or ())
+    dil = etiket_dili(biz)
     onlarda = sorted(set(asil.get("entries", {})) | set(asil.get("segments", {})))
     for k in onlarda:
         ov = {t: asil[t][k] for t in T if k in asil.get(t, {})}
         if k not in bizde:
             eklendi = False
             for t, v in ov.items():
-                d, neden, soy = hazirla(v)
+                d, neden, soy = hazirla(v, dil)
                 if d is None:
                     say["elenen_satir"] += 1
                     nedenler["eklenen: " + neden] = nedenler.get("eklenen: " + neden, 0) + 1
@@ -1075,15 +1097,15 @@ def ekle_eksik(biz, asil):
                 v = ov["segments" if t == "entries" else "entries"]
                 say["capraz_bizE_onlarS" if t == "entries" else "capraz_bizS_onlarE"] += 1
             once = biz[t][k]
-            d, neden, soy = hazirla(v)
+            d, neden, soy = hazirla(v, dil)
             tur = None
             if d is not None:
-                d, tur = konusmaci_uyumu(once, d, bilinen)
+                d, tur = konusmaci_uyumu(once, d, bilinen, dil)
                 if d is not None and not d:
                     d, tur = None, "önek çıkarınca boş"
                 # Onlarin degeri kaynakla ayni (uygulama gostermez), bizimki degil: bizimki kalir.
-                if d is not None and kaynakla_ayni(k, d) and not kaynakla_ayni(k, dil_temizle(once)[0]):
-                    konusma = konusma_mi(d, dil_temizle(once)[0])
+                if d is not None and kaynakla_ayni(k, d) and not kaynakla_ayni(k, dil_temizle(once, dil)[0]):
+                    konusma = konusma_mi(d, dil_temizle(once, dil)[0])
                     say[("kaynakla_ayni_" if konusma else "kaynakla_ayni_ad_") + t] += 1
                     kaynakla_ayni_kalan.append((t, k, d, once, konusma))
                     if konusma:
@@ -1108,7 +1130,7 @@ def ekle_eksik(biz, asil):
     bizim_soyulan = []
     for t in T:
         for k, v in cikti_t[t].items():
-            d2, n = dil_temizle(v)
+            d2, n = dil_temizle(v, dil)
             if n:
                 cikti_t[t][k] = d2
                 say["soyulan_etiket"] += n
@@ -1151,8 +1173,10 @@ def ekle_eksik_denetle(biz, asil, d, elenen_beklenen=None):
     bk = set(B["entries"]) | set(B["segments"])
     ak = set(A["entries"]) | set(A["segments"])
     dk = set(D["entries"]) | set(D["segments"])
+    dil = etiket_dili(biz)
+    oneki, orta_k = DIL_KALIPLARI[dil]
     # (3) anahtar kumesi
-    elenen = {k for k in ak - bk if all(hazirla(A[t][k])[0] is None for t in T if k in A[t])}
+    elenen = {k for k in ak - bk if all(hazirla(A[t][k], dil)[0] is None for t in T if k in A[t])}
     if dk != (bk | ak) - elenen:
         hata.append("anahtar kümesi birleşim eksi elenen değil (fark %d)" % len(dk ^ ((bk | ak) - elenen)))
     o["anahtar_biz"], o["anahtar_asil"], o["anahtar_yeni"], o["elenen_anahtar"] = len(bk), len(ak), len(dk), len(elenen)
@@ -1167,7 +1191,7 @@ def ekle_eksik_denetle(biz, asil, d, elenen_beklenen=None):
                 continue
             if D[t].get(k) == v:
                 ayni += 1
-            elif D[t].get(k) == dil_temizle(v)[0]:
+            elif D[t].get(k) == dil_temizle(v, dil)[0]:
                 soyuldu += 1
             else:
                 hata.append("yalnız bizdeki anahtar dil etiketi dışında değişti: %s.%s" % (t, k))
@@ -1186,9 +1210,9 @@ def ekle_eksik_denetle(biz, asil, d, elenen_beklenen=None):
             if k not in ak:
                 continue
             v = A[t][k] if k in A[t] else A["segments" if t == "entries" else "entries"][k]
-            h = hazirla(v)[0]
+            h = hazirla(v, dil)[0]
             son = D[t][k]
-            bizim_temiz = dil_temizle(once)[0]
+            bizim_temiz = dil_temizle(once, dil)[0]
             if son != bizim_temiz and kaynakla_ayni(k, son) and not kaynakla_ayni(k, bizim_temiz) and konusma_mi(son, bizim_temiz):
                 hata.append("ortak anahtarda kaynakla aynı konuşma değeri alındı, bizimki atıldı: %s.%s" % (t, k))
                 break
@@ -1197,12 +1221,12 @@ def ekle_eksik_denetle(biz, asil, d, elenen_beklenen=None):
             adaylar = set()
             if h is not None:
                 adaylar.add(h)
-                gb, ga = genel_onek(dil_soy(temiz_deger(once))[0]), genel_onek(h)
+                gb, ga = genel_onek(dil_soy(temiz_deger(once), dil)[0]), genel_onek(h)
                 if gb is not None:
                     adaylar.add(gb + ": " + (h[len(ga) + 2:].strip() if ga is not None else h))
             if son in adaylar:
                 alinan += 1
-            elif son == dil_temizle(once)[0]:
+            elif son == dil_temizle(once, dil)[0]:
                 istisna += 1
             else:
                 hata.append("ortak anahtarda değer ne onların ne bizim: %s.%s" % (t, k))
@@ -1212,21 +1236,21 @@ def ekle_eksik_denetle(biz, asil, d, elenen_beklenen=None):
     # yeni anahtar: onlarin hazirlanmis degeri
     for t in T:
         for k in dk - bk:
-            if k in D[t] and D[t][k] != hazirla(A[t].get(k))[0]:
+            if k in D[t] and D[t][k] != hazirla(A[t].get(k), dil)[0]:
                 hata.append("eklenen değer onlarınkiyle aynı değil: %s.%s" % (t, k))
                 break
     # (4) dil etiketi kalmadi mi
     hepsi = [v for t in T for v in D[t].values()]
-    bas = sum(1 for v in hepsi if DIL_ONEKI.match(v))
-    orta = sum(1 for v in hepsi if DIL_ORTA.search(v))
-    soyulmamis = sum(1 for v in hepsi if dil_temizle(v)[1])  # soyulabilir ama birakilmis deger (bos kalacagi icin degil)
-    bos_kalacak = sum(1 for v in hepsi if (DIL_ONEKI.match(v) or DIL_ORTA.search(v)) and not dil_temizle(v)[1])
+    bas = sum(1 for v in hepsi if oneki.match(v))
+    orta = sum(1 for v in hepsi if orta_k.search(v))
+    soyulmamis = sum(1 for v in hepsi if dil_temizle(v, dil)[1])  # soyulabilir ama birakilmis deger (bos kalacagi icin degil)
+    bos_kalacak = sum(1 for v in hepsi if (oneki.match(v) or orta_k.search(v)) and not dil_temizle(v, dil)[1])
     o["dil_etiketi_basta_kalan"], o["dil_etiketi_ortada_kalan"] = bas, orta
     o["dil_etiketi_soyulunca_bos_kalacagi_icin_birakilan"] = bos_kalacak
     o["dil_adi_iki_noktasiz_dokunulmadi"] = sum(1 for v in hepsi if DIL_IKI_NOKTASIZ.search(v))
     o["ingilizce_dil_etiketi_dokunulmadi"] = sum(1 for v in hepsi if DIL_INGILIZCE.search(v))
-    o["dil_etiketli_asil_girdi"] = sum(1 for t in T for v in A[t].values() if DIL_ONEKI.match(temiz_deger(v)))
-    o["dil_etiketli_biz_girdi"] = sum(1 for t in T for v in B[t].values() if DIL_ONEKI.match(v) or DIL_ORTA.search(v))
+    o["dil_etiketli_asil_girdi"] = sum(1 for t in T for v in A[t].values() if oneki.match(temiz_deger(v)))
+    o["dil_etiketli_biz_girdi"] = sum(1 for t in T for v in B[t].values() if oneki.match(v) or orta_k.search(v))
     if soyulmamis:
         hata.append("soyulabilir dil etiketi kaldı: %d değer" % soyulmamis)
     # fuzzy: cozulur, bizim imzalar aynen, eklenenler onlarinkiyle ayni
@@ -1329,8 +1353,8 @@ def ekle_eksik_kipi(args):
             say["bizim_soyulan_deger"], say["soyulan_etiket_bizim"], ", ".join(DIL_ETIKETLERI)),
         "ayrıntı: " + "; ".join("%s=%d" % kv for kv in say["nedenler"].items()),
         "kalan dil etiketli değer (baş/orta, kesin liste): %d / %d" % (
-            sum(1 for t in ("entries", "segments") for v in j[t].values() if DIL_ONEKI.match(v)),
-            sum(1 for t in ("entries", "segments") for v in j[t].values() if DIL_ORTA.search(v))),
+            sum(1 for t in ("entries", "segments") for v in j[t].values() if DIL_KALIPLARI[etiket_dili(biz)][0].match(v)),
+            sum(1 for t in ("entries", "segments") for v in j[t].values() if DIL_KALIPLARI[etiket_dili(biz)][1].search(v))),
         "",
         "dosya boyutu: %d bayt (önce %d)" % (len(bayt), os.path.getsize(args.biz)),
         "sha256: " + sha(bayt),
@@ -1564,6 +1588,29 @@ def ekle_eksik_sina():
     j4 = json.loads(json_bayt(j3))
     j4["entries"][k("Hey.")] = "Hey!"                                         # kural bozulursa denetim yakalar
     assert any("kaynakla aynı" in x for x in ekle_eksik_denetle(B2, A2, j4)[0])
+    # genis dil etiketi yalniz GENIS_ETIKET kimliginde: bizim "Almancada:" etiketi konusmaci sayilmaz, onlarinki alinir
+    for etiket in ("Almancada", "Fransızcası", "İspanyolca olarak", "Lehçesi", "Lehçede", "Mandarin dilinde", "Kantonca",
+                   "İspanyolca'da", "Fransızca'da", "Mandarin", "In Spanish"):
+        assert dil_soy(etiket + ": Dur!", "tr-genis") == ("Dur!", 1), etiket
+    assert dil_temizle("Ne? Arthur: İtalyancada: Gel.", "tr-genis") == ("Ne? Arthur: Gel.", 1)
+    assert dil_soy("Almancada: Dur!") == ("Almancada: Dur!", 0) and dil_soy("Almanca: Dur!")[1] == 0
+    assert dil_soy("Bağ arttıkça: Dur!", "tr-genis")[1] == 0 and dil_soy("İngilizce: Dur!", "tr-genis")[1] == 0
+    assert etiket_dili({"id": "red-dead-redemption-2"}) == "tr-genis" and etiket_dili({"id": "gta-6"}) == "tr"
+    for kimlik, beklenen in (("red-dead-redemption-2", "İpleri keser misin?"), ("gta-6", "Almancada: İpleri keser misin?")):
+        B5 = {"format": 2, "id": kimlik, "title": "R", "speakers": ["Arthur"],
+              "entries": {h(1): "Almancada: İplerimi kesebilir misin?", h(2): "Lehçesi: Kimsin?", h(3): "Arthur: Gel."},
+              "segments": {}}
+        A5 = {"format": 2, "id": kimlik, "title": "R",
+              "entries": {h(1): "Almanca: İpleri keser misin?", h(3): "Gel hemen.", h(4): "Lehçe: Selam."}, "segments": {}}
+        j5, say5, _, _ = ekle_eksik(B5, A5)
+        assert j5["entries"][h(1)] == beklenen, (kimlik, j5["entries"])
+        assert j5["entries"][h(3)] == "Arthur: Gel hemen."
+        if kimlik == "gta-6":  # tr kalibi: genis bicimlere dokunmaz
+            assert j5["entries"][h(2)] == "Lehçesi: Kimsin?" and j5["entries"][h(4)] == "Lehçe: Selam."
+        else:
+            assert j5["entries"][h(2)] == "Kimsin?" and j5["entries"][h(4)] == "Selam."
+        hata5, _ = ekle_eksik_denetle(B5, A5, j5)
+        assert not hata5, (kimlik, hata5)
     print("ekle-eksik sınaması geçti")
 
 
