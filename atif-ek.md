@@ -53,3 +53,13 @@ dil etiketleri ayıklanmıştır. İki paketin kaynağı (paketlerin `source` al
 ```
 GameTranslator, Codex (gpt-6.2-sol), 2026-11-22; English text: GTA 6 Xbox 1.0.2.1 dump
 ```
+
+## Red Dead Redemption 2 ek paketi (`katki/red-dead-redemption-2.json.gz`)
+
+`red-dead-redemption-2` paketine `katki/red-dead-redemption-2.json.gz` satırları eklenir; ortak satırlarda bu paketin
+çevirisi kullanılır, değer başındaki ve cümle aralarındaki dil etiketleri ("İspanyolca: …") ayıklanır. Paketin kaynağı
+(paketin `source` alanı, özgün hâliyle):
+
+```
+PC Türkçe yaması (sahibinin izniyle)
+```
